@@ -364,6 +364,7 @@ function myDay(date){ return (S.days[S.uid] && S.days[S.uid][date]) || blankDay(
 let writeChain = Promise.resolve();
 const timers = {};
 function mutateDay(date, fn){
+  if (!S.uid) return;
   const cur = JSON.parse(JSON.stringify(myDay(date)));
   fn(cur);
   cur.updatedAt = Date.now();
@@ -378,6 +379,7 @@ function mutateDay(date, fn){
   }, 500);
 }
 async function savePlayer(data){
+  if (!S.uid){ toast('Sign in first'); return; }
   S.me = Object.assign({}, S.me||{}, data);
   S.players[S.uid] = S.me;
   render();
@@ -410,7 +412,7 @@ async function pinHashFn(pin){
   return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function rememberUid(uid){ try { if (uid) localStorage.setItem('sbcc-uid', uid); else localStorage.removeItem('sbcc-uid'); } catch(e){} }
-function signOut(){ S.uid=null; S.me=null; S.open=null; S.pick=null; rememberUid(null); render(); }
+function signOut(){ for (const k of Object.keys(timers)) clearTimeout(timers[k]); S.pending={}; S.uid=null; S.me=null; S.open=null; S.pick=null; S.friend=null; rememberUid(null); render(); }
 
 // ---------- theme ----------
 function applyTheme(){
@@ -435,9 +437,9 @@ function render(){
   const t = applyTheme();
   const av = $('avatarBtn');
   av.textContent = S.me ? initials(S.me.name) : '·';
-  if (!S.playersLoaded){ $('tabbar').hidden = true; renderLoading(); return; }
-  if (!S.uid){ $('tabbar').hidden = true; renderGate(); return; }
-  if (!S.me){ $('tabbar').hidden = true; renderOnboarding(); return; }
+  if (!S.playersLoaded){ $('tabbar').hidden = true; renderLoading(); renderOverlay(t); return; }
+  if (!S.uid){ $('tabbar').hidden = true; renderGate(); renderOverlay(t); return; }
+  if (!S.me){ $('tabbar').hidden = true; renderOnboarding(); renderOverlay(t); return; }
   $('tabbar').hidden = false;
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===S.tab));
   if (!S.viewDate) S.viewDate = clampDate(todayStr());
