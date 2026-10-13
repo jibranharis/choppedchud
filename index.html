@@ -291,7 +291,7 @@ const planFor = s => PLAN[fromStr(s).getDay()];
 const workoutFor = s => planFor(s).name;
 
 // ---------- scoring ----------
-function blankDay(date){ return { date, lift:{done:false,note:'',ex:[],startedAt:null,minutes:null}, walk:{done:false,note:'',startedAt:null,minutes:null}, waterOz:0, sleepHrs:null, sugar:false, soda:false, alcohol:false, tiktokMin:null, igMin:null, meals:[], photo:false, cheat:false }; }
+function blankDay(date){ return { date, lift:{done:false,note:'',ex:[],startedAt:null,minutes:null}, walk:{done:false,note:'',startedAt:null,minutes:null}, waterOz:0, sleepHrs:null, sugar:false, soda:false, alcohol:false, tiktokMin:null, igMin:null, meals:[], photo:false, cheat:false, custom:{} }; }
 function calsOf(d){ return (d.meals||[]).reduce((a,m)=>a+(Number(m.cal)||0),0); }
 function tasksFor(date, p, d){
   d = d || blankDay(date);
@@ -310,21 +310,25 @@ function tasksFor(date, p, d){
   const cals = calsOf(d);
   t.push({ id:'cal', label:`Within ${p.calorieGoal} cal`, sub: (d.meals||[]).length ? `${cals} eaten` : 'Log meals in Food', done:(d.meals||[]).length>0 && cals <= p.calorieGoal });
   t.push({ id:'photo', label:'Progress picture', sub:'Taken today', done:!!d.photo });
+  for (const [id, gt] of groupTasks()) t.push({ id:'g_'+id, label:gt.name, sub:gt.sub||'', done:!!(d.custom && d.custom[id]) });
   return t;
 }
 // 1 point per task, +PERFECT_BONUS for a perfect day. Cheat day = all tasks, no bonus.
 const PERFECT_BONUS = 3;
-const DAY_MAX = 11 + PERFECT_BONUS;           // every day has 11 scoring slots (Saturday's lift slot is granted)
-const CHALLENGE_MAX = TOTAL * DAY_MAX;        // 1050
+// Group tasks live at challenge/tasks and are shared by everyone; each is one more scoring slot.
+function groupTasks(){ return Object.entries(S.groupTasks||{}).sort((a,b)=>(a[1].createdAt||0)-(b[1].createdAt||0)); }
+const baseSlots = () => 11 + groupTasks().length;        // Saturday's lift slot is granted
+const dayMax = () => baseSlots() + PERFECT_BONUS;
+const challengeMax = () => TOTAL * dayMax();
 function scoreDay(date, p, d){
   const t = tasksFor(date, p, d);
-  const slots = 11, granted = slots - t.length; // Saturday: 10 tasks + 1 granted
-  if (d && d.cheat) return { pts:slots, max:DAY_MAX, done:t.length, total:t.length, perfect:true, cheat:true, screenMissing:false };
+  const slots = baseSlots(), granted = slots - t.length; // Saturday: one fewer task, slot granted
+  if (d && d.cheat) return { pts:slots, max:dayMax(), done:t.length, total:t.length, perfect:true, cheat:true, screenMissing:false };
   const screenMissing = !d || d.tiktokMin == null || d.igMin == null;
   const done = t.filter(x=>x.done).length;
   const perfect = done === t.length;
   const pts = done + granted + (perfect ? PERFECT_BONUS : 0);
-  return { pts, max:DAY_MAX, done, total:t.length, perfect, cheat:false, screenMissing };
+  return { pts, max:dayMax(), done, total:t.length, perfect, cheat:false, screenMissing };
 }
 function statsFor(uid){
   const p = S.players[uid]; if (!p) return null;
@@ -346,7 +350,7 @@ function statsFor(uid){
   if (!perfectSet.has(cur)) cur = addDays(cur,-1);
   while (perfectSet.has(cur)) { streak++; cur = addDays(cur,-1); }
   const td = scoreDay(today, p, days[today]);
-  return { pts, max, perfect, cheats, streak, counted, pct: max ? pts/max : 0, total: CHALLENGE_MAX, todayDone: td.cheat ? td.total : td.done, todayTotal: td.total };
+  return { pts, max, perfect, cheats, streak, counted, pct: max ? pts/max : 0, total: challengeMax(), todayDone: td.cheat ? td.total : td.done, todayTotal: td.total };
 }
 
 // ---------- calories ----------
@@ -390,6 +394,7 @@ async function savePlayer(data){
 // One live subscription to everyone's data. Firebase applies local writes first, so
 // a snapshot can arrive while a debounced write is still pending; keep those local.
 function subscribeAll(){
+  S.db.ref('challenge/tasks').on('value', snap=>{ S.groupTasks = snap.val() || {}; render(); });
   S.db.ref('players').on('value', snap=>{
     const v = snap.val() || {};
     const players = {}, days = {};
@@ -563,7 +568,7 @@ function renderToday(){
   const gt = $('goToday'); if (gt) gt.onclick = ()=>{ S.viewDate = clampDate(today); render(); };
   screen.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{
     const id=b.dataset.toggle; b.classList.add('pop');
-    mutateDay(date, x=>{ if (id==='lift'||id==='walk') x[id].done=!x[id].done; else x[id]=!x[id]; });
+    mutateDay(date, x=>{ if (id==='lift'||id==='walk') x[id].done=!x[id].done; else if (id.startsWith('g_')){ x.custom=x.custom||{}; x.custom[id.slice(2)]=!x.custom[id.slice(2)]; } else x[id]=!x[id]; });
   });
   screen.querySelectorAll('[data-note]').forEach(i=>i.onchange=()=>mutateDay(date,x=>{ x[i.dataset.note].note=i.value; }));
   screen.querySelectorAll('[data-num]').forEach(i=>i.onchange=()=>mutateDay(date,x=>{ x[i.dataset.num]= i.value===''?null:Number(i.value); }));
@@ -582,7 +587,7 @@ function taskRow(t,d,p,w){
   if (t.id==='sleep') extra = `<div class="task-extra"><input class="mini" type="number" inputmode="decimal" step="0.5" data-num="sleepHrs" placeholder="hrs" value="${d.sleepHrs==null?'':d.sleepHrs}"><span class="unit">hours last night</span></div>`;
   if (t.id==='tiktok') extra = `<div class="task-extra"><input class="mini" type="number" inputmode="numeric" data-num="tiktokMin" placeholder="min" value="${d.tiktokMin==null?'':d.tiktokMin}"><span class="unit">minutes today</span></div>`;
   if (t.id==='ig') extra = `<div class="task-extra"><input class="mini" type="number" inputmode="numeric" data-num="igMin" placeholder="min" value="${d.igMin==null?'':d.igMin}"><span class="unit">minutes today</span></div>`;
-  const toggleable = ['lift','walk','sugar','soda','alcohol','photo'].includes(t.id);
+  const toggleable = ['lift','walk','sugar','soda','alcohol','photo'].includes(t.id) || t.id.startsWith('g_');
   return `<div class="task ${t.done?'done':''}"><div class="task-main"><button class="check ${t.done?'on':''}" ${toggleable?`data-toggle="${t.id}"`:'disabled style="opacity:.9"'} aria-label="${esc(t.label)}">${checkSvg}</button><div class="task-title">${esc(t.label)}${t.sub?`<span class="sub">${esc(t.sub)}</span>`:''}</div></div>${extra}</div>`;
 }
 
@@ -759,6 +764,7 @@ function renderFriendProfile(){
       <div class="drow"><span>No soda</span>${yes(d.soda||d.cheat)}</div>
       <div class="drow"><span>No alcohol</span>${yes(d.alcohol||d.cheat)}</div>
       <div class="drow"><span>Progress picture</span>${yes(d.photo||d.cheat)}</div>
+      ${groupTasks().map(([id,gt])=>`<div class="drow"><span>${esc(gt.name)}</span>${yes((d.custom&&d.custom[id])||d.cheat)}</div>`).join('')}
     </div>
     <div class="card stack">
       <div class="row between"><p class="eyebrow" style="margin:0">Food</p><span class="pill ${cals>p.calorieGoal?'bad':''} num">${cals} / ${p.calorieGoal} cal</span></div>
@@ -787,6 +793,12 @@ function renderOverlay(t){
         <div class="grid2"><label class="f">Weight (lb)<input type="number" id="s-weight" value="${p.weightLb}"></label><label class="f">Age<input type="number" id="s-age" value="${p.age}"></label></div>
         <div class="grid2"><label class="f">Calorie goal<input type="number" id="s-cal" value="${p.calorieGoal}"></label><label class="f">Water goal (oz)<input type="number" id="s-water" value="${p.waterGoalOz}"></label></div>
         <button class="btn" id="s-save">Save</button>
+      </div>
+      <hr>
+      <div class="stack"><p class="eyebrow">Group tasks</p>
+        <p class="small muted" style="margin:0">Shared by all three of you. Each one is a point every day and makes a perfect day harder. Removing one deletes it for everyone.</p>
+        <div class="exlist">${groupTasks().map(([id,gt])=>`<div class="row" style="border-top:1px solid var(--line);padding:6px 0"><span style="flex:1;min-width:0">${esc(gt.name)}${gt.sub?` <span class="small muted">· ${esc(gt.sub)}</span>`:''}</span><button class="x" data-gt-rm="${id}" aria-label="Remove" style="color:var(--muted);font-size:18px;padding:4px 8px">×</button></div>`).join('')}${groupTasks().length?'':'<p class="small muted" style="margin:0">None yet. The 11 built-in tasks always apply.</p>'}</div>
+        <div class="stack" style="gap:6px"><input type="text" id="gt-name" placeholder="Task name, e.g. Read 10 pages"><input type="text" id="gt-sub" placeholder="Short rule (optional), e.g. before bed"><button class="btn soft" id="gt-add">Add task for everyone</button></div>
       </div>
       <hr>
       <button class="btn ghost" id="s-signout">Switch person</button>
@@ -823,6 +835,8 @@ function renderOverlay(t){
   o.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>setTheme('mode',b.dataset.mode));
   const ss=$('s-save'); if(ss) ss.onclick=()=>{ savePlayer({ name:$('s-name').value.trim()||S.me.name, weightLb:Number($('s-weight').value)||S.me.weightLb, age:Number($('s-age').value)||S.me.age, calorieGoal:Number($('s-cal').value)||S.me.calorieGoal, waterGoalOz:Number($('s-water').value)||S.me.waterGoalOz }); S.open=null; toast('Saved'); render(); };
   const so=$('s-signout'); if(so) so.onclick=signOut;
+  const ga=$('gt-add'); if(ga) ga.onclick=()=>{ const name=$('gt-name').value.trim(), sub=$('gt-sub').value.trim(); if(!name){ toast('Give the task a name'); return; } S.db.ref('challenge/tasks').push({ name, sub, createdAt:Date.now(), by:S.uid }).then(()=>toast('Added for everyone')).catch(e=>{ toast('Could not add'); console.warn(e); }); };
+  o.querySelectorAll('[data-gt-rm]').forEach(b=>b.onclick=()=>{ const id=b.dataset.gtRm; if (S.confirmRm===id){ S.confirmRm=null; S.db.ref('challenge/tasks/'+id).remove().then(()=>toast('Removed for everyone')); } else { S.confirmRm=id; toast('Tap × again to remove it for everyone'); } });
   const cy=$('cheatYes'); if(cy) cy.onclick=()=>{ const date=S.open.date; S.open=null; mutateDay(date,x=>{ x.cheat=true; }); toast('Cheat day. Enjoy it.'); };
   if (S.open && S.open.type==='plan'){
     const {date,which}=S.open;
